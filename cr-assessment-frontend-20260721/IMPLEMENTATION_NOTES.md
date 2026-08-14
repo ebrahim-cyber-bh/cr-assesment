@@ -11,8 +11,11 @@ I had to install nvm here. and ran the app.
 
 ## 1. What I changed
 <!-- Grouped by task: bugs fixed and features implemented (component + template). -->
+- Task 1: isChanged is quantity, unitPrice and description as it was comapring proce alone. ( diff.util.ts)
+canApprove checks CR status and canApprovePolicy(user). (cr-detail.component.ts).
 
--
+after doing that all the test have passed.
+
 
 ## 2. Component & state model
 <!-- The screens, the view-state each component exposes, and how data flows from the mock API into the
