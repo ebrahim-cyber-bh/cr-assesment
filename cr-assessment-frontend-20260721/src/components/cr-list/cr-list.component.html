@@ -18,7 +18,11 @@
 
 	<p *ngIf="state.status === 'empty'" class="cr-list__empty">No change requests to show.</p>
 
-	<table *ngIf="state.status === 'loaded'" class="cr-list__table">
+	<p *ngIf="state.status === 'loaded' && !visibleRows.length" class="cr-list__no-matches">
+		No change requests with status {{ statusFilter }}.
+	</p>
+
+	<table *ngIf="state.status === 'loaded' && visibleRows.length" class="cr-list__table">
 		<thead>
 			<tr>
 				<th>ID</th>

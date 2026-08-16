@@ -11,10 +11,20 @@ I had to install nvm here. and ran the app.
 
 ## 1. What I changed
 <!-- Grouped by task: bugs fixed and features implemented (component + template). -->
-- Task 1: isChanged is quantity, unitPrice and description as it was comapring proce alone. ( diff.util.ts)
+- Task 1: isChanged is quantity, unitPrice and description as it was comapring price alone. ( diff.util.ts)
 canApprove checks CR status and canApprovePolicy(user). (cr-detail.component.ts).
 
 after doing that all the test have passed.
+
+
+- Task 2: Task 2, in plain terms
+The brief asked for two things:
+
+1. "Keep  loading / loaded / empty / error states correct."
+These were already built. My job was not to break them — and I didn't; both existing list tests still pass. I did add one case they were missing (below).
+
+2. "Implement the status filter so visibleRows narrows by status."
+This was the actual work, and it was one line.
 
 
 ## 2. Component & state model
