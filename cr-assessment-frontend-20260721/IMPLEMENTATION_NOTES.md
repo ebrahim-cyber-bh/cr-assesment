@@ -27,6 +27,8 @@ These were already built. My job was not to break them — and I didn't; both ex
 This was the actual work, and it was one line.
 
 
+
+
 ## 2. Component & state model
 <!-- The screens, the view-state each component exposes, and how data flows from the mock API into the
 template. -->
@@ -43,6 +45,10 @@ template. -->
 | Invariant | How / where |
 |---|---|
 
+Task 2:
+| Exactly one view state renders — never a blank screen | `*ngIf` on `state.status` in both templates; list adds a `visibleRows.length` branch for the no-match case |
+
+
 ## 4. Testing strategy
 <!-- What you tested (component/DOM vs pure) and why; what you deliberately skipped given the budget. -->
 
@@ -51,7 +57,11 @@ template. -->
 ## 5. Assumptions
 <!-- Where the requirements left room for interpretation, the calls you made and why. -->
 
--
+-task 2:
+
+- "No CRs in your org" and "no CRs match your filter" are different messages. Kept as separate
+  elements (`cr-list__empty` vs `cr-list__no-matches`) — one means there is nothing to do, the
+  other means change the filter.
 
 ## 6. Where I used AI
 -
