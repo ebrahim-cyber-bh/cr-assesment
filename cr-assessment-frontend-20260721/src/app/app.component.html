@@ -1,8 +1,12 @@
 <header class="app-header">
 	<h1>Change Request Review</h1>
+	
 	<label>
 		Acting as:
+		<!-- here we are using angular framework way of coding  -->
+		 <!-- deals with acting as drop-down (viewer/approver/otherorg) -->
 		<select (change)="switchUser($any($event.target).value)">
+			<!-- here we are generating the 3 acting as -->
 			<option *ngFor="let key of userKeys" [value]="key" [selected]="session.user.id === users[key]?.id">{{ key }}</option>
 		</select>
 	</label>

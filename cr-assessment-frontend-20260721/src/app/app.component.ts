@@ -1,3 +1,6 @@
+// here we are loading data when a user is being switches. as anagular dont deal well here we are removing both screen (past and current user).
+// then screens loads the data freshly 
+
 import { Component } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { CrListComponent } from '../components/cr-list/cr-list.component';
