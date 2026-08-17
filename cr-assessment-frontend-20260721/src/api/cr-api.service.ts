@@ -1,3 +1,7 @@
+// mock api holds the data in the memory and hands it back with small dealy (pretending to be real api thing)
+
+
+
 import { Injectable } from '@angular/core';
 import { CrDetail, CrSummary, ReqUser } from '../models/cr.models';
 import { details as fixtureDetails, summaries as fixtureSummaries } from './fixtures';
@@ -15,6 +19,7 @@ import { details as fixtureDetails, summaries as fixtureSummaries } from './fixt
 export class CrApiService {
 	private detailStore: Record<string, CrDetail> = JSON.parse(JSON.stringify(fixtureDetails));
 	/** Set > 0 to simulate network latency (ms). */
+	// here we are setting up the latency ment to simulate api
 	latencyMs = 0;
 	/** When true, the NEXT call rejects with a network error, then resets. */
 	failNext = false;
@@ -38,6 +43,7 @@ export class CrApiService {
 
 	listChangeRequests(user: ReqUser): Promise<CrSummary[]> {
 		const rows = fixtureSummaries
+		// filtering and chcing that the cr belongs to the same organization
 			.filter((s) => s.orgCode === user.orgCode)
 			.map((s) => {
 				const d = this.detailStore[s.id];
@@ -51,7 +57,7 @@ export class CrApiService {
 		if (!cr || cr.orgCode !== user.orgCode) return this.fail<CrDetail>('Not found');
 		return this.settle({ ...cr });
 	}
-
+	// here we approve or rejuct the change request
 	approve(user: ReqUser, id: string, at: string): Promise<CrDetail> {
 		return this.transition(user, id, 'APPROVED', 'APPROVE', at);
 	}

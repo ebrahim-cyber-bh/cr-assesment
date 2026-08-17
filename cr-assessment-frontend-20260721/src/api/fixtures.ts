@@ -1,3 +1,5 @@
+// here we are handling the fake data
+
 import { CrDetail, CrSummary, ReqUser } from '../models/cr.models';
 
 /** Deterministic, anonymized fixtures used by the mock API service and the tests. */
