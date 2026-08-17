@@ -1,3 +1,5 @@
+// here we are dealing with whoo is using the app right now
+
 import { Injectable } from '@angular/core';
 import { ReqUser } from '../models/cr.models';
 import { users } from '../api/fixtures';
