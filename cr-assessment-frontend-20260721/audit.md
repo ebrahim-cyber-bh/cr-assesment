@@ -1031,6 +1031,228 @@ Tasks 1–3 — which is the point of the audit in Step 0.
 
 ---
 
+## Task 5 — Tests
+
+### What was asked
+
+> Add your own tests (component/DOM where relevant). Cover the behavior you built — list states and
+> filter, the diff, the timeline, the permission logic, the action flows and their unhappy paths,
+> and validation. We value tests that pin rendered behavior and edge cases over a coverage number.
+
+### Approach
+
+**Extended the three existing spec files rather than adding new ones.** The scaffold already
+establishes where each kind of test lives; a parallel set of `*.extra.spec.ts` files would have
+split related assertions across two places for no benefit.
+
+**The provided tests were kept verbatim.** All four still read exactly as shipped. They are the
+graded baseline, so they were left untouched and new tests were grouped underneath them in
+`describe` blocks.
+
+**Two helper changes**, both backward-compatible so the provided tests still call them unchanged:
+
+```ts
+const flush = (ms = 0) => new Promise((r) => setTimeout(r, ms));   // was: () => ... 0
+
+interface RenderOptions { settle?: boolean; failNext?: boolean; latencyMs?: number }
+async function render(user: ReqUser, id: string, opts: RenderOptions = {}) { ... }
+```
+
+- `settle: false` stops before the API resolves, so the **loading** state can be asserted on.
+- `failNext: true` is set on the service *before* the component is created, so the **error** state
+  is reachable on first load.
+- `latencyMs` is applied *after* the initial load settles, so only the action is slow — the test
+  does not pay the latency twice.
+
+**Rule learned in Task 4 and applied throughout: one `TestBed.configureTestingModule` per test.**
+TestBed cannot be reconfigured once instantiated, so each `it` renders exactly once.
+
+---
+
+### The 45 tests, numbered
+
+**`src/components/diff.spec.ts` — 10 tests** (pure function, no DOM)
+
+| # | Test | What it pins |
+|---|---|---|
+| 1 | detects a removed sku | *provided* — a baseline SKU missing from the proposal is `removed` |
+| 2 | detects an added sku | *provided* — a proposed SKU absent from the baseline is `added` |
+| 3 | detects a quantity-only change as changed | *provided, originally failing* — the Task 1 bug |
+| 4 | detects a unit-price-only change as changed | The original comparison still works; the fix did not trade one field for another |
+| 5 | detects a description-only change as changed | The judgment call from Task 1, pinned — this is the CR-2 "new supplier" case |
+| 6 | reports an untouched line as unchanged | The fix did not make *everything* look changed — the opposite failure mode of #3 |
+| 7 | treats every line as added when there is no baseline | Empty-baseline edge case |
+| 8 | treats every line as removed when nothing is proposed | Empty-proposal edge case |
+| 9 | keeps baseline order and appends added lines | Row **order** is stable regardless of how the proposal is ordered |
+| 10 | carries both sides of a changed row | `baseline` and `proposed` are both populated, so the template can render before/after |
+
+**`src/components/cr-list/cr-list.component.spec.ts` — 11 tests** (rendered DOM)
+
+| # | Test | What it pins |
+|---|---|---|
+| 11 | renders a row per change request in the user org | *provided* — 3 rows for org-alpha |
+| 12 | shows the empty state when the org has no change requests | *provided* — message shown, table absent |
+| 13 | shows the loading state before the API resolves | Renders `.cr-list__loading` and **no** table mid-flight |
+| 14 | shows the error state with a Retry button when the API fails | `failNext` → message contains "Network error", Retry button present, table absent |
+| 15 | recovers when Retry succeeds after a failure | Clicks the real Retry button; error clears and 3 rows appear. Pins that the error state is not a dead end |
+| 16 | narrows the table to the selected status | `PENDING_APPROVAL` → exactly 1 row, and it is CR-1 |
+| 17 | restores every row when the filter goes back to ALL | Filtering is reversible — `DRAFT` (1) → `ALL` (3) |
+| 18 | shows a no-match message instead of an empty table | `CANCELLED` → message naming the status, table absent. The Task 2 gap |
+| 19 | keeps the no-match message distinct from the org-empty message | `.cr-list__empty` must **not** appear when the filter is what emptied the table |
+| 20 | only lists change requests belonging to the caller org | `bob` (org-beta) sees 1 row, CR-9 — org scoping |
+| 21 | emits the change request id when a row is clicked | Real DOM click → `select` emits `'CR-1'`. Pins the list→detail wiring |
+
+**`src/components/cr-detail/cr-detail.component.spec.ts` — 24 tests** (rendered DOM)
+
+*View states*
+
+| # | Test | What it pins |
+|---|---|---|
+| 22 | loads and renders the change request title | *provided* |
+| 23 | disables Approve for a read-only viewer on a pending CR | *provided, originally failing* — the Task 1 permission bug |
+| 24 | shows the loading state before the API resolves | `.cr-detail__loading` renders mid-flight |
+| 25 | shows an error with a Retry button when the CR belongs to another org | `bob` requesting CR-1 → "Not found", Retry present, header absent |
+
+*Diff panel*
+
+| # | Test | What it pins |
+|---|---|---|
+| 26 | classifies each proposed line and renders it as a row | CR-1 renders `['changed', 'unchanged']` via the `data-kind` attribute |
+| 27 | renders the before and after quantities of a changed line | The before cell shows `10 ×`, the after cell `11 ×` — the diff is *readable*, not just correct |
+| 28 | renders the totals and the delta as formatted money | `USD 8,000.00`, `USD 8,500.00`, delta `USD 500.00` — pins `formatMoney` reaching the template |
+
+*Timeline*
+
+| # | Test | What it pins |
+|---|---|---|
+| 29 | renders the audit entries oldest-first | CR-1 ships newest-first; rendered order must be `CREATE → SUBMIT → SEND_FOR_APPROVAL` |
+| 30 | does not reorder the loaded CR itself when sorting for display | Reads the getter, then asserts `detail.audit[0]` is **still** `SEND_FOR_APPROVAL`. Pins the "sort a copy" invariant — the reason for the `[...]` spread |
+
+*Permission and status gating*
+
+| # | Test | What it pins |
+|---|---|---|
+| 31 | lets an approver act on a pending CR in their own org | The positive case — Approve enabled, reject form present, no "unavailable" message |
+| 32 | offers a read-only viewer no enabled action anywhere on the page | Queries **every** `<button>` and asserts none is enabled — catches any future action added without a gate |
+| 33 | still shows the data to a read-only viewer | 2 diff rows, 3 timeline entries. "Cannot act" must not become "cannot see" |
+| 34 | explains that a CR which is not awaiting approval cannot be acted on | CR-2 (`APPLIED`) → "not awaiting approval", Approve disabled |
+| 35 | refuses the action even when `approve()` is called directly | Bypasses the UI entirely; the CR stays `PENDING_APPROVAL`. Pins the guard *inside* `act()`, not just the template |
+
+*Approve*
+
+| # | Test | What it pins |
+|---|---|---|
+| 36 | applies the returned CR to the view and appends the timeline entry | Status → `APPROVED`, badge updates, last timeline action is `APPROVE` |
+| 37 | withdraws the actions once the CR is no longer pending | Approve disabled and the reject block gone after approving — the gates re-evaluate off the new status |
+| 38 | surfaces a failure and leaves the loaded CR untouched | `failNext` → error shown, status still `PENDING_APPROVAL`, **and the button is enabled again** so it can be retried |
+| 39 | shows a pending message and freezes the reason box while in flight | `latencyMs: 40` → `.cr-actions__pending` present and the textarea `readOnly`; both revert afterwards |
+| 40 | ignores a second click while the first call is still in flight | Two `approve()` calls under latency produce exactly **one** `APPROVE` entry. The scenario the brief names in §11 |
+
+*Reject and reason validation*
+
+| # | Test | What it pins |
+|---|---|---|
+| 41 | keeps Reject disabled until a reason is entered | Disabled when empty, enabled once real text is typed |
+| 42 | does not accept a reason of only whitespace | `'    '` leaves it disabled — the reason `Validators.required` alone was not enough |
+| 43 | shows the validation message and calls no API when rejected with no reason | `reject()` on an empty control reveals `.cr-actions__reason-error` and makes no call. Pins `markAsTouched()` |
+| 44 | records the trimmed reason on the timeline and withdraws the actions | `'  price too high  '` is stored as `'price too high'`; status → `REJECTED`; reject block gone |
+| 45 | surfaces a failed reject and keeps the reason for a retry | Error shown, CR unchanged, **and the typed reason is still in the control** so the user need not retype it |
+
+---
+
+### Verifying the tests are not vacuous
+
+A green suite proves nothing on its own — a test that asserts nothing also passes. So both Task 1/2
+fixes were deliberately reverted and the suite re-run:
+
+| Mutation | Tests that caught it |
+|---|---|
+| `isChanged` reduced back to `unitPrice` only | #3 quantity-only, #5 description-only, #26 rendered diff kinds |
+| `visibleRows` returning `rows` unfiltered | #16 narrows to status, #17 restores on ALL, #18 no-match message |
+
+**6 failures, exactly where expected.** Both files were then restored and the suite returned to
+45/45. This is the evidence that the tests pin behaviour rather than merely execute it.
+
+---
+
+### Coverage against the brief's checklist
+
+| The brief asks for | Tests |
+|---|---|
+| List states | 12, 13, 14, 15, 18, 19 |
+| Filter | 16, 17, 18, 19 |
+| The diff | 1–10, 26, 27, 28 |
+| The timeline | 29, 30 |
+| Permission logic | 23, 31, 32, 33, 34, 35 |
+| Action flows | 36, 37, 44 |
+| Unhappy paths | 14, 15, 25, 38, 39, 40, 45 |
+| Validation | 41, 42, 43, 44 |
+
+---
+
+### Judgment calls
+
+**1. Extended the shipped spec files instead of adding new ones.** Related assertions stay together,
+and the provided tests remain in place as the baseline.
+
+**2. DOM assertions preferred over component-property assertions.** Where both were possible, the
+test asserts on rendered output (`querySelector('.cr-actions__approve').disabled`) rather than the
+getter behind it. The brief asks for tests that pin *rendered behaviour*; a getter can be right while
+the template ignores it.
+
+**3. Component methods are called directly for action flows** (`await fixture.componentInstance.approve()`)
+rather than clicking the button. A DOM click on a disabled button silently does nothing, which would
+make a broken test look like a passing one. Where the *wiring* is the point — #15 Retry, #21 row
+click — a real DOM click is used instead.
+
+**4. No coverage threshold was configured.** The brief explicitly values edge cases over a coverage
+number, and a threshold would invite tests written to raise a percentage.
+
+**5. `latencyMs` is applied after the initial load** so only the action under test is slow. Total
+suite runtime stays under 5 seconds.
+
+---
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/components/diff.spec.ts` | 3 provided tests kept; **7 added** |
+| `src/components/cr-list/cr-list.component.spec.ts` | 2 provided tests kept; **9 added**; `render` gained options, `flush` gained an optional delay |
+| `src/components/cr-detail/cr-detail.component.spec.ts` | 2 provided tests kept; **22 added**; same helper changes plus two small text helpers |
+
+No application code was changed by Task 5 — which is itself worth noting: the tests were written
+against the behaviour as built, and all 38 new ones passed without needing to adjust the components.
+
+---
+
+### Summary of what has been done
+
+- **45 tests, all passing**, up from the 7 that shipped (2 of which originally failed).
+- **38 new tests** covering every item on the brief's Task 5 checklist.
+- **Verified by mutation** — reintroducing either original bug fails exactly the tests that should
+  fail, and no others.
+- **Rendered behaviour, not internals** — disabled buttons, absent elements, message text, row
+  ordering and timeline ordering are all asserted on the DOM.
+- **Deterministic and fast** — 45 tests in ~4.5s, driven by `latencyMs`/`failNext` rather than real
+  delays or fake timers.
+- Lint, typecheck and Prettier all clean on the three spec files.
+
+---
+
+### Known gaps
+
+- **`app.component.ts` (the demo shell) is untested.** The README states it is "just glue for the
+  demo"; the `setTimeout`-based reload trick would need fake timers for little value.
+- **`money.util.ts` has no direct unit test.** It is covered indirectly through #28. A dedicated test
+  of `formatMoney(1234567.891, 'USD')` would pin the thousands separator and rounding more precisely.
+- **`SessionService` is always replaced with a stub**, so the real default-user wiring is never
+  exercised in a test.
+- **Timestamps are not asserted**, because `act()` calls `new Date()` internally. Injecting a clock
+  would make the `at` value assertable.
+
+---
+
 ## Interview prep — live changes they may ask for
 
 The brief's §11 says the follow-up includes making a live change and debugging a scenario. Notes on
