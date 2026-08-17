@@ -1,6 +1,6 @@
 import { Component, Input, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormControl, ReactiveFormsModule } from '@angular/forms';
+import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
 import { CrApiService } from '../../api/cr-api.service';
 import { SessionService } from '../../session/session.service';
 import { CrDetail, TimelineEntry } from '../../models/cr.models';
@@ -26,8 +26,8 @@ export class CrDetailComponent implements OnInit {
 	state: ViewState<CrDetail> = idle();
 	submitting = false;
 	actionError?: string;
-	// TODO: add validation so the form is invalid until a reason is entered.
-	rejectControl = new FormControl('', { nonNullable: true });
+	/** `pattern(/\S/)` on top of `required` so a reason of only spaces does not count as one. */
+	rejectControl = new FormControl('', { nonNullable: true, validators: [Validators.required, Validators.pattern(/\S/)] });
 
 	constructor(private readonly api: CrApiService, private readonly session: SessionService) {}
 
@@ -54,10 +54,10 @@ export class CrDetailComponent implements OnInit {
 		return this.detail ? computeDiff(this.detail.baselineLineItems, this.detail.proposedLineItems) : [];
 	}
 
-	/** Approval timeline, oldest-first. */
+	/** Approval timeline, oldest-first. Sorted on a copy: `sort` mutates, and `audit` belongs to the
+	 *  loaded CR. ISO-8601 timestamps sort correctly as plain strings. */
 	get timeline(): TimelineEntry[] {
-		// TODO: return the audit entries ordered chronologically (oldest first).
-		return this.detail?.audit ?? [];
+		return [...(this.detail?.audit ?? [])].sort((a, b) => a.at.localeCompare(b.at));
 	}
 
 	/** Whether the current user may approve the loaded CR: the CR must be awaiting a decision AND
@@ -71,18 +71,47 @@ export class CrDetailComponent implements OnInit {
 		return this.canApprove;
 	}
 
+	/** Why no action is on offer, or null when the user may act. Keeps the template free of the
+	 *  status-vs-permission branching so it can be asserted on directly. */
+	get actionUnavailableReason(): string | null {
+		if (this.canApprove) return null;
+		if (this.detail?.status !== 'PENDING_APPROVAL') return 'This change request is not awaiting approval.';
+		return 'You do not have permission to act on this change request.';
+	}
+
 	fmt(amount: number): string {
 		return this.detail ? formatMoney(amount, this.detail.currency) : String(amount);
 	}
 
 	async approve(): Promise<void> {
-		// TODO: perform the approve action through the API and reflect the outcome in the view.
-		throw new Error('approve() not implemented');
+		await this.act((at) => this.api.approve(this.session.user, this.id, at));
 	}
 
 	async reject(): Promise<void> {
-		// TODO: require a valid rejectControl, then perform the reject action through the API and
-		//       reflect the outcome in the view.
-		throw new Error('reject() not implemented');
+		if (this.rejectControl.invalid) {
+			this.rejectControl.markAsTouched(); // surfaces the validation message on a bare click
+			return;
+		}
+		const reason = this.rejectControl.value.trim();
+		await this.act((at) => this.api.reject(this.session.user, this.id, at, reason));
+	}
+
+	/**
+	 * Shared approve/reject flow. Re-checks the permission gate the template already enforces,
+	 * blocks a second call while one is in flight, and swaps in the CR the API returns so the
+	 * status, totals and timeline stay consistent without a second round-trip. A failure leaves the
+	 * loaded CR untouched and surfaces the message instead.
+	 */
+	private async act(call: (at: string) => Promise<CrDetail>): Promise<void> {
+		if (this.submitting || !this.canApprove) return;
+		this.submitting = true;
+		this.actionError = undefined;
+		try {
+			this.state = { status: 'loaded', data: await call(new Date().toISOString()) };
+		} catch (err) {
+			this.actionError = (err as Error).message;
+		} finally {
+			this.submitting = false;
+		}
 	}
 }

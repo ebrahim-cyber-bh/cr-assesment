@@ -484,6 +484,350 @@ specifically. Reusing that class for a different meaning would have made that te
 
 ---
 
+## Task 3 — The detail screen
+
+### What was asked
+
+> In `cr-detail.component` + its template:
+> - the **diff/preview panel** (added / removed / changed / unchanged rows, with totals and delta),
+> - the **approval timeline**, rendered **chronologically**,
+> - **permission-aware action visibility**: whether Approve/Reject are offered/enabled must respect
+>   both the CR's status and the user's policies,
+> - **Approve / Reject actions** that call the API and behave correctly on a slow or failing response,
+> - **Reject reason validation**: a reason is required before Reject can proceed.
+
+### Step 0 — Establish what was already done
+
+Before writing anything I checked each of the five bullets against the shipped code, so as not to
+rebuild working parts.
+
+| Bullet | State before Task 3 |
+|---|---|
+| Diff panel | **Already complete.** The template loops `diff` into a table with `data-kind` on each row; the `diff` getter was fixed in Task 1 |
+| Totals + delta | **Already complete.** The header renders `fmt(baselineTotal) → fmt(newTotal)` and `(Δ fmt(delta))` |
+| Timeline | Template loop existed; the `timeline` getter returned entries **unsorted** — a TODO |
+| Permission gating | Fixed in Task 1 (`canApprove` checks status **and** policy) |
+| Approve / Reject | Both threw `not implemented` — TODOs |
+| Reject validation | `rejectControl` had **no validators** — a TODO |
+
+So the real work was four things: sort the timeline, add validators, implement the two actions, and
+make the "why is there no button" case explicit.
+
+**Note on totals.** `baselineTotal`, `newTotal` and `delta` come from the API and are rendered as
+given, rather than re-derived from the line items. The server owns the money — recomputing it in the
+frontend would introduce a second source of truth that could disagree with the backend. Verified the
+fixture is self-consistent: CR-1 baseline `10×500 + 30×100 = 8000`, proposed `11×500 + 30×100 = 8500`,
+delta `500`. ✅
+
+---
+
+### Step 1 — Reject reason validation
+
+**File:** `src/components/cr-detail/cr-detail.component.ts`
+
+**Before:**
+```ts
+// TODO: add validation so the form is invalid until a reason is entered.
+rejectControl = new FormControl('', { nonNullable: true });
+```
+
+**After:**
+```ts
+/** `pattern(/\S/)` on top of `required` so a reason of only spaces does not count as one. */
+rejectControl = new FormControl('', { nonNullable: true, validators: [Validators.required, Validators.pattern(/\S/)] });
+```
+
+Also added `Validators` to the existing `@angular/forms` import.
+
+**Why two validators, not one.** `Validators.required` only rejects an *empty* string — a reason of
+`"   "` passes it. `Validators.pattern(/\S/)` demands at least one non-whitespace character. Without
+it, a user could hold down the spacebar and enable the Reject button.
+
+**No template change was needed.** The markup already had both halves wired to the control:
+
+```html
+<p *ngIf="rejectControl.invalid && rejectControl.touched" class="cr-actions__reason-error" role="alert">
+	Please enter a reason.
+</p>
+<button ... [disabled]="!canReject || submitting || rejectControl.invalid" (click)="reject()">
+```
+
+Those bindings were dormant because the control could never *be* invalid. Adding the validators
+brought both to life at once.
+
+---
+
+### Step 2 — Timeline in chronological order
+
+**File:** `src/components/cr-detail/cr-detail.component.ts`
+
+**Before:**
+```ts
+/** Approval timeline, oldest-first. */
+get timeline(): TimelineEntry[] {
+	// TODO: return the audit entries ordered chronologically (oldest first).
+	return this.detail?.audit ?? [];
+}
+```
+
+**After:**
+```ts
+/** Approval timeline, oldest-first. Sorted on a copy: `sort` mutates, and `audit` belongs to the
+ *  loaded CR. ISO-8601 timestamps sort correctly as plain strings. */
+get timeline(): TimelineEntry[] {
+	return [...(this.detail?.audit ?? [])].sort((a, b) => a.at.localeCompare(b.at));
+}
+```
+
+**Why the array is copied first.** `Array.prototype.sort` sorts **in place** — it rearranges the
+original. `this.detail.audit` is not a local list; it is part of the loaded CR held in `state.data`.
+Sorting it directly would quietly reorder the component's own data every time the screen redrew. The
+spread `[...]` makes a copy, so the sort touches only what is about to be rendered.
+
+**Why string comparison works on dates.** Timestamps are ISO-8601 in UTC
+(`2026-03-02T10:00:00.000Z`): fixed-width, largest unit first, so alphabetical order and
+chronological order are the same thing. No `Date` parsing needed.
+
+**Why this mattered.** CR-1's audit ships deliberately out of order — `SEND_FOR_APPROVAL`, then
+`SUBMIT`, then `CREATE`. Rendered as-is, the screen claimed the CR was sent for approval before it
+was created.
+
+---
+
+### Step 3 — Saying *why* no action is offered
+
+**File:** `src/components/cr-detail/cr-detail.component.ts` — new getter, added after `canReject`
+
+**Before:** *(did not exist)*
+
+**After:**
+```ts
+/** Why no action is on offer, or null when the user may act. Keeps the template free of the
+ *  status-vs-permission branching so it can be asserted on directly. */
+get actionUnavailableReason(): string | null {
+	if (this.canApprove) return null;
+	if (this.detail?.status !== 'PENDING_APPROVAL') return 'This change request is not awaiting approval.';
+	return 'You do not have permission to act on this change request.';
+}
+```
+
+**File:** `src/components/cr-detail/cr-detail.component.html`
+
+**Before:**
+```html
+<p *ngIf="actionError" class="cr-actions__error" role="alert">{{ actionError }}</p>
+
+<button type="button" class="cr-actions__approve" [disabled]="!canApprove || submitting" (click)="approve()">
+```
+
+**After:**
+```html
+<p *ngIf="actionError" class="cr-actions__error" role="alert">{{ actionError }}</p>
+
+<p *ngIf="actionUnavailableReason" class="cr-actions__unavailable">{{ actionUnavailableReason }}</p>
+
+<button type="button" class="cr-actions__approve" [disabled]="!canApprove || submitting" (click)="approve()">
+```
+
+**The problem this solves.** A greyed-out button with no explanation is a dead end — the user cannot
+tell whether the CR is in the wrong state or whether *they* are the wrong person. The two causes get
+different sentences.
+
+**Why the branching lives in the component, not the template.** The brief asks to avoid "template
+logic that can't be tested". A ternary inside `{{ }}` can only be checked by scraping rendered text;
+a getter returning `string | null` can be asserted on directly.
+
+---
+
+### Step 4 — The Approve and Reject actions
+
+**File:** `src/components/cr-detail/cr-detail.component.ts`
+
+**Before:**
+```ts
+async approve(): Promise<void> {
+	// TODO: perform the approve action through the API and reflect the outcome in the view.
+	throw new Error('approve() not implemented');
+}
+
+async reject(): Promise<void> {
+	// TODO: require a valid rejectControl, then perform the reject action through the API and
+	//       reflect the outcome in the view.
+	throw new Error('reject() not implemented');
+}
+```
+
+**After:**
+```ts
+async approve(): Promise<void> {
+	await this.act((at) => this.api.approve(this.session.user, this.id, at));
+}
+
+async reject(): Promise<void> {
+	if (this.rejectControl.invalid) {
+		this.rejectControl.markAsTouched(); // surfaces the validation message on a bare click
+		return;
+	}
+	const reason = this.rejectControl.value.trim();
+	await this.act((at) => this.api.reject(this.session.user, this.id, at, reason));
+}
+
+/**
+ * Shared approve/reject flow. Re-checks the permission gate the template already enforces,
+ * blocks a second call while one is in flight, and swaps in the CR the API returns so the
+ * status, totals and timeline stay consistent without a second round-trip. A failure leaves the
+ * loaded CR untouched and surfaces the message instead.
+ */
+private async act(call: (at: string) => Promise<CrDetail>): Promise<void> {
+	if (this.submitting || !this.canApprove) return;
+	this.submitting = true;
+	this.actionError = undefined;
+	try {
+		this.state = { status: 'loaded', data: await call(new Date().toISOString()) };
+	} catch (err) {
+		this.actionError = (err as Error).message;
+	} finally {
+		this.submitting = false;
+	}
+}
+```
+
+**Why one shared `act` helper.** Approve and Reject differ only in which API call they make.
+Everything around that call — the double-submit guard, the permission re-check, clearing the old
+error, swapping in the result, resetting `submitting` — is identical. Writing it twice would mean
+two places to get the error handling wrong. The caller passes a function that takes the timestamp
+and returns the API promise; `act` owns the lifecycle.
+
+Point-by-point:
+
+| Line | Why it is there |
+|---|---|
+| `if (this.submitting ...) return;` | **Double-submit guard.** On a slow network a user can click Approve twice before the first call returns. The button is already disabled via `[disabled]`, but a disabled button is a UI courtesy, not a guarantee — the component enforces it too |
+| `... \|\| !this.canApprove` | **Defence in depth.** The template already hides/disables the controls, but the method is public and must not depend on the template being correct |
+| `this.actionError = undefined;` | Clears a stale error so a retry does not show the previous failure next to a success |
+| `data: await call(...)` | The API returns the **updated** `CrDetail` — new status, new `updatedAt`, new audit entry. Assigning it refreshes status, timeline and gating together, with no second request |
+| `catch` → `actionError` | On failure `state` is never reassigned, so the previously loaded CR stays on screen intact. The user sees what they were looking at, plus a message |
+| `finally` | `submitting` is reset on **both** paths. In `try` alone, a failed call would leave the buttons disabled forever |
+| `new Date().toISOString()` | The mock API takes the timestamp from the caller rather than generating it |
+
+**Why `reject()` calls `markAsTouched()`.** The validation message is bound to
+`rejectControl.invalid && rejectControl.touched`. A control is only "touched" once the user has
+focused and left it, so on a click with an untouched empty box the message would stay hidden and the
+click would appear to do nothing. Marking it touched makes the reason visible.
+
+**Why the reason is trimmed.** `"  price too high  "` is stored as `"price too high"`. The validator
+guarantees there is real content; trimming keeps the stored audit note clean.
+
+---
+
+### Step 5 — Verification
+
+`npm test` (7/7) only proves nothing broke — none of the shipped tests touch the new code. So each
+new behaviour was checked with a temporary spec, run, and confirmed before the file was removed
+again. All ten passed:
+
+| # | Checked | Result |
+|---|---|---|
+| 1 | CR-1 timeline renders `CREATE → SUBMIT → SEND_FOR_APPROVAL` | ✅ |
+| 2 | Approve updates status to `APPROVED`, appends `APPROVE` to the timeline, disables the button afterwards | ✅ |
+| 3 | Reject button disabled when empty **and** when whitespace-only; enabled with real text | ✅ |
+| 4 | Reject stores the trimmed reason as the timeline note; the reject block disappears once terminal | ✅ |
+| 5 | Calling `reject()` with an empty reason makes no API call, marks the control touched, shows the message | ✅ |
+| 6 | A failing approve (`failNext`) shows "Network error", leaves the CR at `PENDING_APPROVAL`, resets `submitting` | ✅ |
+| 7 | A slow approve (`latencyMs = 40`) disables the button, and a second click adds only **one** `APPROVE` entry | ✅ |
+| 8 | Read-only viewer sees the diff, Approve disabled, reject block absent, permission message shown | ✅ |
+| 9 | An `APPLIED` CR shows "not awaiting approval" | ✅ |
+| 10 | CR-1 diff renders `['changed', 'unchanged']`; totals show `USD 8,000.00` and `USD 8,500.00` | ✅ |
+
+The spec file was kept at
+`scratchpad/task3-verification.spec.ts` — it is the natural starting point for Task 5 rather than
+something to rewrite from scratch.
+
+Standard checks after the change:
+
+```bash
+npm test        # 3 suites, 7 passed
+npm run lint    # clean
+npm run typecheck
+npx prettier --check src/components/cr-detail/cr-detail.component.ts   # clean
+```
+
+---
+
+### Judgment calls
+
+**1. The Approve button stays visible but disabled for a read-only user.** Task 4 says a read-only
+user "cannot see/enable actions", which reads like the button should be hidden. It must not be. The
+shipped test does:
+
+```ts
+const approveBtn = fixture.nativeElement.querySelector('.cr-actions__approve');
+expect(approveBtn.disabled).toBe(true);
+```
+
+with `users.viewer`. Hiding the button makes `querySelector` return `null` and the test crashes. The
+provided spec is the tie-breaker, so "cannot see/enable actions" is read as *no action is ever
+available to them* — Approve renders disabled, the reject form is hidden entirely, and
+`actionUnavailableReason` explains why.
+
+**2. Reject is hidden while Approve is only disabled.** That asymmetry ships in the template
+(`*ngIf="canReject"` on the reject block) and is kept. It is defensible: a textarea asking for a
+rejection reason is meaningless to someone who cannot reject, whereas the greyed Approve button
+communicates that an approval step exists but is not theirs.
+
+**3. Totals are rendered as the API reports them,** not recomputed from line items. One source of
+truth for money.
+
+**4. A whitespace-only reason is not a reason.** `Validators.required` alone would have accepted it.
+
+---
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/components/cr-detail/cr-detail.component.ts` | Added `Validators` import; validators on `rejectControl`; `timeline` sorts a copy oldest-first; new `actionUnavailableReason` getter; implemented `approve()` and `reject()` on a shared private `act()` helper |
+| `src/components/cr-detail/cr-detail.component.html` | Added the `cr-actions__unavailable` message |
+
+Two files. The diff panel, totals, permission gates and all existing bindings were left untouched
+because they were already correct.
+
+---
+
+### Summary of what has been done
+
+Task 3 turned the detail screen from a read-only preview into a working approval tool:
+
+1. **The timeline now tells the truth** — entries render oldest-first instead of in whatever order
+   the API returned them, sorted on a copy so the loaded CR is never mutated.
+2. **Reject demands a real reason** — empty and whitespace-only are both blocked, at the button and
+   again inside the method, with the validation message revealed on a bare click.
+3. **Both actions work end to end** — they call the API, swap in the returned CR so status, timeline
+   and gating update together, and need no second request.
+4. **The unhappy paths behave** — a failure shows a message and leaves the CR on screen unharmed; a
+   slow response disables the controls and a second click is ignored; `submitting` always resets.
+5. **The UI explains itself** — instead of an unexplained greyed-out button, the user is told
+   whether the CR is not awaiting approval or the permission is not theirs.
+
+Every one of those was observed passing, not merely reasoned about.
+
+---
+
+### Known gaps
+
+- **The verification tests are not in the repo yet.** They live in the scratchpad; folding them into
+  `cr-detail.component.spec.ts` is Task 5.
+- **Timestamps render as raw ISO strings** (`2026-03-02T10:00:00.000Z`). A `| date:'medium'` pipe
+  would read better; left alone because the README states visual polish is not assessed, and no test
+  should be broken for cosmetics without a reason.
+- **The reject textarea stays editable while a reject is in flight.** The button is disabled, so no
+  second call can start; only the text can change under a request already sent. Disabling the
+  control during `submitting` would be tidier.
+- **`new Date()` is called inside the component**, which makes the timestamp untestable without
+  faking timers. Injecting a clock would be more rigorous but is over-engineering at this size.
+
+---
+
 ## Interview prep — live changes they may ask for
 
 The brief's §11 says the follow-up includes making a live change and debugging a scenario. Notes on
@@ -512,10 +856,15 @@ template logic can't be unit-tested, which is why `canApprove` is a getter rathe
 
 ### "Approve was clicked twice on a slow network — what stops the double action?"
 
-The `submitting` flag, bound in the template as `[disabled]="!canApprove || submitting"`. Set it
-before `await`, clear it in a `finally` so a failed call re-enables the button. To demonstrate:
-set `api.latencyMs = 500`, click twice, assert one call. This is the scenario the brief names
-explicitly, so it is worth having a test that pins it.
+Two layers, both in `act()` (see Task 3, Step 4). The `submitting` flag is bound in the template as
+`[disabled]="!canApprove || submitting"`, so the button greys out the moment the first call starts.
+But a disabled button is a UI courtesy, not a guarantee — `act()` opens with
+`if (this.submitting || !this.canApprove) return;`, so a second call is dropped even if it arrives
+some other way. `submitting` is cleared in a `finally`, so a *failed* call re-enables the button
+rather than locking the screen.
+
+Verified: with `latencyMs = 40`, two `approve()` calls produce exactly one `APPROVE` entry on the
+timeline.
 
 ### "Why does the diff use two Maps?"
 
