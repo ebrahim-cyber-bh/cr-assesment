@@ -828,6 +828,209 @@ Every one of those was observed passing, not merely reasoned about.
 
 ---
 
+## Task 4 — Role/permission awareness and UX states
+
+### What was asked
+
+> A read-only user sees the data but cannot see/enable actions; loading, empty, and error states are
+> represented explicitly in the templates (no blank screens).
+
+### Step 0 — Audit what already satisfied this
+
+Task 4 is largely a *consequence* of Tasks 1–3 rather than new construction, so the first job was to
+walk every state both screens can reach and find what was genuinely missing.
+
+**List screen — every reachable state:**
+
+| State | What renders | Since |
+|---|---|---|
+| `loading` | "Loading change requests…" (`role="status"`) | shipped |
+| `error` | Message + **Retry** button (`role="alert"`) | shipped |
+| `empty` (org has no CRs) | "No change requests to show." | shipped |
+| `loaded`, filter matches nothing | "No change requests with status X." | **Task 2** |
+| `loaded`, filter matches rows | The table | shipped |
+
+**Detail screen — every reachable state:**
+
+| State | What renders | Since |
+|---|---|---|
+| `loading` | "Loading change request…" (`role="status"`) | shipped |
+| `error` | Message + **Retry** button (`role="alert"`) | shipped |
+| `loaded` | Header, diff, timeline, actions | shipped |
+| `loaded`, user may not act | Approve disabled + reason message | **Task 3** |
+| `loaded`, CR not pending | Approve disabled + "not awaiting approval" | **Task 3** |
+
+**On the `idle` status.** `ViewStatus` includes `'idle'`, and neither template has a branch for it —
+which looks like a blank-screen hole. It is not reachable: both components initialise to `idle()`,
+but `ngOnInit` immediately calls `load()`, which sets `loading()` before the first render. A branch
+for it would be dead code, so none was added. Recorded here because "why is `idle` unhandled?" is a
+fair question to be asked.
+
+That audit left **two** genuine gaps, both on the detail screen, both about the moment an action is
+in flight.
+
+---
+
+### Gap 1 — An in-flight action gave no feedback
+
+**File:** `src/components/cr-detail/cr-detail.component.html`
+
+**Before:**
+```html
+<p *ngIf="actionUnavailableReason" class="cr-actions__unavailable">{{ actionUnavailableReason }}</p>
+
+<button type="button" class="cr-actions__approve" [disabled]="!canApprove || submitting" (click)="approve()">
+```
+
+**After:**
+```html
+<p *ngIf="actionUnavailableReason" class="cr-actions__unavailable">{{ actionUnavailableReason }}</p>
+
+<p *ngIf="submitting" class="cr-actions__pending" role="status">Submitting…</p>
+
+<button type="button" class="cr-actions__approve" [disabled]="!canApprove || submitting" (click)="approve()">
+```
+
+**Why.** Clicking Approve on a slow connection greyed both buttons out and then… nothing, until the
+response arrived. Greyed-out controls with no explanation read as *broken*, not as *busy*. An action
+in flight is a loading state, and Task 4 asks for loading states to be explicit. `role="status"`
+matches the two loading messages already in the templates, so screen readers announce it the same
+way.
+
+No component change was needed — `submitting` already existed and was already being set by `act()`.
+
+---
+
+### Gap 2 — The reason box stayed editable mid-request
+
+**File:** `src/components/cr-detail/cr-detail.component.html`
+
+**Before:**
+```html
+<textarea class="cr-actions__reason" [formControl]="rejectControl"></textarea>
+```
+
+**After:**
+```html
+<textarea class="cr-actions__reason" [formControl]="rejectControl" [readonly]="submitting"></textarea>
+```
+
+**Why.** This was logged as a known gap at the end of Task 3. Once Reject is clicked, the reason has
+been sent; letting the user keep typing means the box no longer shows what was actually submitted.
+The Reject button was already disabled, so no second request could start — this closes the smaller
+hole of the text drifting out of sync with the request in flight.
+
+**Why `[readonly]` and not `disable()`.** The reactive-forms way would be
+`rejectControl.disable()` / `.enable()`, but a disabled control is treated as **not part of the
+form** — its validity is excluded, so `rejectControl.invalid` would flip to `false` mid-request and
+the Reject button's `[disabled]` binding would briefly disagree with itself. `[readonly]` blocks
+typing without touching validity, and stays declarative — bound straight to `submitting`, with no
+imperative enable/disable calls to keep in sync.
+
+---
+
+### Verification
+
+13 checks, all passing, run against real rendered DOM:
+
+| Group | Checked | Result |
+|---|---|---|
+| List | Loading renders its message | ✅ |
+| List | `failNext` → error message **and** a Retry button | ✅ |
+| List | Empty org renders the empty message | ✅ |
+| List | Filter matching nothing → message, table absent | ✅ |
+| List | Loading renders visible text, not an empty shell | ✅ |
+| Detail | Loading renders its message | ✅ |
+| Detail | Cross-org request → "Not found" + Retry | ✅ |
+| Read-only | Sees title, 2 diff rows, 3 timeline entries | ✅ |
+| Read-only | **Zero enabled buttons anywhere on the page**, reject block absent | ✅ |
+| Read-only | Told *why* — message mentions permission | ✅ |
+| Read-only | `approve()` called directly still leaves the CR `PENDING_APPROVAL` | ✅ |
+| In-flight | Pending message appears, textarea becomes readonly, both revert on completion | ✅ |
+| In-flight | A **failed** action clears the pending message and shows the error | ✅ |
+
+The strongest of these is *"zero enabled buttons anywhere on the page"* — it queries every `<button>`
+in the rendered output and asserts none is enabled, rather than naming the two we happen to know
+about. A future action added without a permission gate would fail it.
+
+Saved at `scratchpad/task4-verification.spec.ts` for Task 5.
+
+```bash
+npm test        # 3 suites, 7 passed
+npm run lint    # clean
+```
+
+**One test of mine failed first time round** — `Cannot configure the test module when the test module
+has already been instantiated`, because a single `it` called the render helper twice and TestBed
+cannot be reconfigured after instantiation. The *code* was fine; the test was wrong. Replaced with a
+single-render assertion. Worth remembering when writing Task 5: **one TestBed configuration per
+test**.
+
+---
+
+### A note on Prettier and templates
+
+`npx prettier --check` flags `cr-detail.component.html`. Checked against the committed version: it
+**already failed before this task**, and every line Prettier wants to reflow (the `<tr><th>…</th></tr>`
+header row, the Approve button, the reason-error paragraph) ships that way in the scaffold. The
+project's own `npm run format` script only targets `src/**/*.ts`, so templates were never in its
+scope. Left untouched — reformatting them would add a large unrelated diff.
+
+---
+
+### Judgment calls
+
+**1. Approve stays rendered-but-disabled for a read-only user** (carried over from Task 3). The
+brief's wording is "cannot see/enable actions", but the shipped spec asserts
+`querySelector('.cr-actions__approve').disabled === true` for `users.viewer` — the element must
+exist. Read as *no action is ever available to them*: Approve disabled, reject form hidden,
+`actionUnavailableReason` explaining which of the two reasons applies.
+
+**2. `idle` is deliberately unhandled** — unreachable, so a branch would be dead code. See Step 0.
+
+**3. No success confirmation after an action.** The status badge changes (`PENDING_APPROVAL` →
+`APPROVED`) and a new timeline entry appears, both visible immediately. A separate "Approved!"
+banner would duplicate information already on screen.
+
+---
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/components/cr-detail/cr-detail.component.html` | Added the `cr-actions__pending` message; added `[readonly]="submitting"` to the reason textarea |
+
+One file, two changes (`git diff --stat`: 3 insertions, 1 deletion — one new line plus its blank
+separator, and one line modified in place). Everything else Task 4 asks for was already satisfied by
+Tasks 1–3 — which is the point of the audit in Step 0.
+
+---
+
+### Summary of what has been done
+
+1. **Walked every reachable state of both screens** and confirmed each one renders something
+   explicit — 10 in total (5 per screen, counting the two "cannot act" variants of the detail
+   screen's `loaded` state). All 10 are covered across the two verification specs; the
+   "CR not awaiting approval" case is pinned in the Task 3 spec rather than the Task 4 one.
+2. **Closed the in-flight feedback gap**: an action in progress says "Submitting…" instead of
+   silently greying out.
+3. **Closed the mid-request editing gap**: the reason box freezes while its rejection is being sent.
+4. **Proved the read-only guarantee properly** — not "the two buttons we know about are disabled",
+   but "no enabled button exists anywhere on the page", plus the component refusing the action even
+   when called directly, bypassing the UI entirely.
+
+---
+
+### Known gaps
+
+- **Tests still live outside the repo.** Two verification specs now sit in the scratchpad
+  (`task3-verification.spec.ts`, `task4-verification.spec.ts`, 23 checks between them). Folding them
+  into the real spec files is Task 5, and is the largest outstanding item in the submission.
+- **`idle` remains unhandled**, by choice — see above.
+- **Timestamps still render as raw ISO strings.**
+
+---
+
 ## Interview prep — live changes they may ask for
 
 The brief's §11 says the follow-up includes making a live change and debugging a scenario. Notes on

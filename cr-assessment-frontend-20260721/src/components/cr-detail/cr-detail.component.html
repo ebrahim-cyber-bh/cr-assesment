@@ -53,6 +53,8 @@
 
 			<p *ngIf="actionUnavailableReason" class="cr-actions__unavailable">{{ actionUnavailableReason }}</p>
 
+			<p *ngIf="submitting" class="cr-actions__pending" role="status">Submitting…</p>
+
 			<button type="button" class="cr-actions__approve" [disabled]="!canApprove || submitting" (click)="approve()">
 				Approve
 			</button>
@@ -60,7 +62,7 @@
 			<div class="cr-actions__reject" *ngIf="canReject">
 				<label>
 					Reason for rejection
-					<textarea class="cr-actions__reason" [formControl]="rejectControl"></textarea>
+					<textarea class="cr-actions__reason" [formControl]="rejectControl" [readonly]="submitting"></textarea>
 				</label>
 				<p *ngIf="rejectControl.invalid && rejectControl.touched" class="cr-actions__reason-error" role="alert">
 					Please enter a reason.
