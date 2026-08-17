@@ -1,3 +1,5 @@
+// checkingwhat users can do (roles)
+
 import { ReqUser } from '../models/cr.models';
 
 /** Policy-string helpers. Policies are `cr_{action}_{scope}` (see README). */

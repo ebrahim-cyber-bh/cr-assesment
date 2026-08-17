@@ -1,3 +1,10 @@
+// the 5 status screens. 
+// idle nothing happening
+// loading - asking for api to get the daata and watign for them to get back
+// loaded - data recived successfully
+// empty - everything okay but nothing to show up
+// error - request failed.
+
 /** loading / loaded / empty / error view-state, as a template switches on. */
 export type ViewStatus = 'idle' | 'loading' | 'loaded' | 'empty' | 'error';
 

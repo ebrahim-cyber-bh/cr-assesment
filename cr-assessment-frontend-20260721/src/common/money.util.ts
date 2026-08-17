@@ -1,3 +1,5 @@
+// dealing with numbers and do 2 dp rounding
+
 export function round2(value: number): number {
 	return Math.round((value + Number.EPSILON) * 100) / 100;
 }
