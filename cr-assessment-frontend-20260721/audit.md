@@ -6,6 +6,110 @@ this file is the working log I can talk through in the interview.
 
 ---
 
+## What this project is
+
+### The business problem, in plain words
+
+A company buys things under a long-term contract called a **Purchase Agreement** — for example
+*"we will buy 10 Widget A at $500 each and 30 Widget B at $100 each."*
+
+When something about that contract needs to change — buy 11 widgets instead of 10, switch to a
+different supplier, extend the term — you cannot just quietly edit the contract. Someone raises a
+**Change Request (CR)**, which is a formal proposal describing the change. That CR is then routed
+to an **approver**, a person with the authority to say yes or no.
+
+**This project is the approver's screen.** It answers four questions for them:
+
+1. Which change requests are waiting for me?
+2. What exactly does this one change?
+3. Who has touched it so far, and when?
+4. Can I approve or reject it — and am I even allowed to?
+
+### What it is *not*
+
+There is **no backend, no database, no login**. The data comes from a fake API
+(`src/api/cr-api.service.ts`) that reads hardcoded sample data and hands it back after a short
+delay, imitating a real network call. The exercise is purely the frontend.
+
+### The two screens
+
+| Screen | What it shows |
+|---|---|
+| **List** (`cr-list`) | A table of change requests, with a dropdown to filter by status |
+| **Detail** (`cr-detail`) | One change request: what it changes, its history, and Approve / Reject buttons |
+
+### The life of a change request
+
+```
+DRAFT → SUBMITTED → PENDING_APPROVAL → APPROVED → APPLIED
+                            │
+                            └──→ REJECTED        (REJECTED and CANCELLED are dead ends)
+```
+
+Approve and Reject only make sense while a CR sits at **PENDING_APPROVAL**. That is why almost every
+permission check in this codebase starts by asking "is this CR pending?"
+
+### What's in the repo
+
+| Folder / file | What lives there |
+|---|---|
+| `src/models/` | The shapes of the data — what a CR, a line item, a user look like |
+| `src/api/` | The fake API and the sample data it serves |
+| `src/common/` | Small shared helpers: view state, money formatting, permission checks |
+| `src/session/` | Who is currently signed in |
+| `src/components/cr-list/` | The list screen |
+| `src/components/cr-detail/` | The detail screen |
+| `src/components/diff.util.ts` | Works out what changed between the old and new line items |
+| `*.spec.ts` files | The tests |
+
+### Concepts you need to know to read this code
+
+**Component = class + template.** Each screen is two files that work as a pair. The `.ts` file is a
+TypeScript class holding the data and the logic. The `.html` file is the markup, and it can read
+anything public on that class. Angular keeps them in sync automatically — change a value in the
+class, the screen updates.
+
+**Getter.** A property that is calculated fresh every time it is read, instead of being stored.
+Written `get visibleRows() { ... }` in the class, but used as plain `visibleRows` in the template.
+This codebase uses getters for everything derived — the filtered rows, the diff, the timeline, the
+permission checks. The benefit: nothing can go stale, because nothing is stored in the first place.
+Change the filter and the screen just re-reads the getter.
+
+**ViewState.** One object describing what a screen should currently be showing:
+
+```ts
+{ status: 'idle' | 'loading' | 'loaded' | 'empty' | 'error', data: T | null, error?: string }
+```
+
+The template asks "what is the status?" and shows the matching thing — a spinner, the data, an
+empty message, or an error with a Retry button. The point is that a screen is **never blank**:
+every possible situation has something visible attached to it.
+
+**Policy strings.** Permissions are plain strings shaped `cr_{action}_{scope}`:
+
+| Part | Values | Meaning |
+|---|---|---|
+| action | `r` / `a` / `x` | read / approve / apply |
+| scope | `u` / `w` / `o` | own CRs / workspace / whole org |
+
+So `cr_a_o` means "may approve any CR in the organisation", while a user holding only `cr_r_o` can
+look but not touch. The three sample users are `mona` (approver), `val` (read-only viewer), and
+`bob` (approver, but in a different organisation).
+
+**Org scoping.** The fake API only ever returns CRs belonging to the caller's own organisation.
+`bob` asking for a CR from `org-alpha` gets an error, not a refusal — he cannot even see that it
+exists.
+
+**Promise / async / await.** The fake API does not answer instantly; it answers "in a moment",
+which is what a `Promise` represents. `await` means "pause here until the answer arrives." This
+matters in tests, which must let the answer arrive before checking what got rendered.
+
+**Jest + TestBed.** `npm test` builds the components in a fake browser, renders them, and then
+inspects the actual HTML that came out — for example, "is the Approve button disabled?" These are
+not tests of the code's internals; they test what the user would really see.
+
+---
+
 ## 0. Environment
 
 The repo pins Node 18.20.3 via `.nvmrc`, and Angular 15 / `@angular-devkit/build-angular` 15
@@ -197,6 +301,186 @@ npx prettier --check "src/**/*.ts"
 Only `diff.util.ts` was run through Prettier. `cr-api.service.ts`, `fixtures.ts` and
 `cr-list.component.ts` ship **already unformatted**; running `npm run format` across the repo would
 reformat files this task never touched and bury the real change in noise. They are left as-is.
+
+---
+
+## Task 2 — The status filter on the list screen
+
+### What was asked
+
+> In `cr-list.component`: the loading / loaded / empty / error states are wired — keep them
+> correct, and implement the **status filter** so `visibleRows` (and the rendered table) narrows by
+> status.
+
+Two halves. The second half is the new work; the first half is a warning not to break what already
+exists while doing it.
+
+### Step 1 — Work out what was already there
+
+Before changing anything, I traced what happens when someone picks a status from the dropdown.
+
+The list screen has a `<select>` at the top of the table. The sample data for `org-alpha` is three
+change requests: **CR-1** is `PENDING_APPROVAL`, **CR-2** is `APPLIED`, **CR-3** is `DRAFT`.
+
+Following the dropdown through the code:
+
+1. The user picks a status → the browser fires a `change` event.
+2. The template calls `onFilterChange(...)` with the chosen value.
+3. `onFilterChange` stores it: `this.statusFilter = value`.
+4. The table draws one row for each item in `visibleRows`.
+
+Steps 1 to 3 already worked perfectly. The problem was step 4 — `visibleRows` looked like this:
+
+```ts
+get visibleRows(): CrSummary[] {
+	const rows = this.state.data ?? [];
+	// TODO: narrow `rows` by `this.statusFilter` ('ALL' shows everything).
+	return rows;
+}
+```
+
+It handed back **every** row and never once looked at `statusFilter`.
+
+**So the bug was not a broken dropdown.** The dropdown was recording the choice correctly; nothing
+was reading it. Choosing a status genuinely changed the value stored in the component — the table
+simply ignored it. Useful to know, because it meant the fix was one line in one place, and no
+changes to the dropdown at all.
+
+### Step 2 — Make the filter actually filter
+
+**File:** `src/components/cr-list/cr-list.component.ts`
+
+```ts
+/** Rows to render, after applying the active status filter. */
+get visibleRows(): CrSummary[] {
+	const rows = this.state.data ?? [];
+	return this.statusFilter === 'ALL' ? rows : rows.filter((cr) => cr.status === this.statusFilter);
+}
+```
+
+Read in plain English: *"if the filter is set to ALL, hand back everything untouched; otherwise
+hand back only the rows whose status matches the filter."*
+
+`'ALL'` is treated as a special value meaning "no filtering", which is why it needs its own branch —
+no CR ever has a literal status of `ALL`, so filtering by it would match nothing and empty the
+table.
+
+**Why this was the whole component change.** `visibleRows` is a *getter*, so Angular re-reads it
+every time it refreshes the screen. Nobody has to tell the table "the filter changed, redraw
+yourself" — it asks for the rows again on its own and gets the newly filtered list. This is the
+single most useful thing to understand about this codebase.
+
+### Step 3 — Find the hole that opened up
+
+With the filter working, I ran the app and clicked through every status. Picking **CANCELLED**
+produced this:
+
+```
+┌────────┬────────────┬────────┬───────┐
+│ ID     │ Title      │ Status │ Delta │
+├────────┴────────────┴────────┴───────┤
+│           (nothing here)             │
+└──────────────────────────────────────┘
+```
+
+Column headings, and nothing underneath. `org-alpha` has no cancelled CRs, so the filter correctly
+matched zero rows — but the screen said nothing about it. To a user this looks broken rather than
+empty.
+
+**Why the existing "empty" message did not cover this.** The screen already has a
+*"No change requests to show"* message, but it never appeared here. The reason is a timing one:
+
+```ts
+this.state = { status: rows.length ? 'loaded' : 'empty', data: rows };
+```
+
+That line runs **once**, when the data first arrives from the API, and it asks only *"did the API
+return anything at all?"* For `org-alpha` the answer is yes, three of them — so the status is set
+to `'loaded'` and stays `'loaded'` forever. Filtering happens later, every time the screen redraws,
+and never revisits that decision. The empty message was wired to a question that had already been
+answered.
+
+### Step 4 — Add the missing message
+
+**File:** `src/components/cr-list/cr-list.component.html`
+
+```html
+<p *ngIf="state.status === 'loaded' && !visibleRows.length" class="cr-list__no-matches">
+	No change requests with status {{ statusFilter }}.
+</p>
+
+<table *ngIf="state.status === 'loaded' && visibleRows.length" class="cr-list__table">
+```
+
+Two things happen here. The new paragraph appears when the data loaded fine but the filter matched
+nothing. The table gained the same `visibleRows.length` condition, so it hides in exactly that
+case — which stops the message and the empty table from appearing together.
+
+`*ngIf` means "only put this element on the page when the condition is true".
+
+**Checking every case.** After the change I walked through every state the screen can be in, to be
+sure exactly one thing shows each time:
+
+| Situation | What appears |
+|---|---|
+| Still fetching | "Loading change requests…" |
+| API failed | Error message + Retry button |
+| Org has no CRs at all | "No change requests to show." |
+| Filter matches some rows | The table |
+| Filter matches nothing | "No change requests with status X." |
+
+No situation shows two things, and no situation shows nothing.
+
+**A detail that quietly matters.** The new message names the status: *"No change requests with
+status CANCELLED"*. It can never say the nonsensical *"...with status ALL"*, because `'loaded'`
+only ever gets set when the API returned at least one row, and `ALL` never filters any of them out.
+That is a real dependency between two files — if the `rows.length ? 'loaded' : 'empty'` line were
+ever changed, this message could start lying.
+
+### Step 5 — Verify
+
+```bash
+npm test        # 3 suites, 7 passed — the two existing list tests still pass
+npm run lint    # clean
+npm start       # ALL -> 3 rows | PENDING_APPROVAL -> 1 | CANCELLED -> the new message
+```
+
+The passing tests matter for the first half of the task: *"keep them correct"*. One existing test
+checks that three rows render for `org-alpha`, another that a user in an empty org sees the empty
+message and no table. Both still pass, which is the evidence that adding the filter did not damage
+the states that were already working.
+
+### The judgment call
+
+**"Your org has no change requests" and "your filter matched nothing" are deliberately different
+messages**, in two separate elements (`cr-list__empty` and `cr-list__no-matches`).
+
+They mean different things to the person reading them. The first says there is genuinely nothing
+for you to do. The second says the data is there, you have just hidden it — change the filter.
+Collapsing them into one message would tell a user with three pending approvals that they have
+nothing to review.
+
+There is also a practical reason: an existing test asserts on the `cr-list__empty` element
+specifically. Reusing that class for a different meaning would have made that test ambiguous.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/components/cr-list/cr-list.component.ts` | `visibleRows` now filters by `statusFilter`; `'ALL'` passes everything through |
+| `src/components/cr-list/cr-list.component.html` | Added the `cr-list__no-matches` message; table now also requires `visibleRows.length` |
+
+### Known gaps
+
+- **No test covers the no-match message yet.** The suite proves nothing broke; it does not prove
+  the new message renders. That test belongs in Task 5.
+- **`visibleRows` is evaluated three times per redraw** — once for each `*ngIf` and once for the
+  `*ngFor`. Three passes over three rows is free, and the simplicity is worth it. If the list ever
+  held thousands of rows, the fix would be to cache the result against `statusFilter` and
+  `state.data`, or switch the component to `OnPush` change detection with a precomputed array.
+- **Prettier still flags `cr-list.component.ts`**, on line 24 — the `statuses` array is 141
+  characters against a 140 limit. That line ships that way and predates this task, so it was left
+  alone rather than adding an unrelated reformat to the diff.
 
 ---
 
