@@ -1302,3 +1302,108 @@ comparison inside it was wrong.
 
 See §1.2. Be ready to defend it *and* to split it live if they introduce a separate reject policy —
 it is deliberately one line.
+
+---
+
+## The screen recording
+
+### What the brief actually asks for
+
+> A **5–8 minute screen-recording**: walk through the list + detail screens (including a rejection
+> and an error state) and one non-trivial decision.
+
+Four required ingredients, and nothing else is mandatory:
+
+1. the **list** screen,
+2. the **detail** screen,
+3. a **rejection**, performed on camera,
+4. an **error state**, shown on camera,
+5. one **non-trivial decision**, explained.
+
+Everything beyond those is optional and competes for the same 8 minutes.
+
+### Before recording — two practical gotchas
+
+**1. The mock API is stateful.** `CrApiService` keeps a private `detailStore` and `approve`/`reject`
+mutate it. Approve CR-1 once and it stays `APPROVED` for the rest of the session — the demo cannot
+be repeated without a **browser refresh**. Refresh between takes, and refresh before the final run.
+
+**2. Zero latency makes the loading states invisible.** `latencyMs` defaults to `0`, so the spinner
+text never appears on camera. For the recording only, set a visible delay in
+`src/api/cr-api.service.ts`:
+
+```ts
+latencyMs = 600;   // demo only — revert before committing
+```
+
+This also makes the "Submitting…" message and the disabled-button window long enough to see, which
+matters for the double-submit explanation. **Revert it before the final commit**, or say out loud
+that it is temporary.
+
+### A 5–8 minute running order
+
+| Time | Show | Say |
+|---|---|---|
+| 0:00–0:30 | The app, loaded | What the domain is: buyers amend purchase agreements via change requests; this is the approver's screen |
+| 0:30–2:00 | **List.** Loading → 3 rows. Filter to `PENDING_APPROVAL` → 1 row. Filter to `CANCELLED` → the no-match message. Back to `ALL` | That `state.status` is decided once at load time, so a filter matching nothing needed its own message — and why that message is deliberately different from "your org has no CRs" |
+| 2:00–3:15 | **Detail (CR-1).** The diff panel, then the totals and delta, then the timeline | SKU-A changed 10 → 11 at the same price — the bug was that only `unitPrice` was compared. The timeline: the fixture ships newest-first, so it is sorted for display **on a copy**, because `sort` mutates |
+| 3:15–4:15 | **Permissions.** Switch "Acting as" to `val` | Approve is disabled, the reject form is gone entirely, and the UI says *why*. Read-only means no enabled action anywhere on the page |
+| 4:15–4:45 | **Error state.** Switch to `bob` (org-beta) with CR-1 still selected | The API is org-scoped, so this is "Not found" — plus a Retry button, because an error state must not be a dead end |
+| 4:45–6:00 | **Rejection.** Back to `mona`, refresh. Click Reject with the box empty → validation message. Type a reason → button enables. Reject → status `REJECTED`, reason on the timeline, actions withdrawn | Empty *and* whitespace-only are both blocked; the reason is trimmed before it is stored |
+| 6:00–7:30 | **The non-trivial decision** (see below) | — |
+| 7:30–8:00 | `npm test` → 45 passing | Briefly: what the suite covers, and that the tests were verified by reverting the bugs to confirm they fail |
+
+### Which non-trivial decision to pick
+
+**Recommended: the double-submit guard.** It is the scenario the brief itself names in §11
+("Approve was clicked twice on a slow network"), and it is the only one you can *demonstrate* rather
+than merely describe. With `latencyMs` raised, click Approve twice on camera, then show the timeline
+has exactly one `APPROVE` entry, then show the code:
+
+```ts
+private async act(call: (at: string) => Promise<CrDetail>): Promise<void> {
+	if (this.submitting || !this.canApprove) return;
+	...
+	} finally {
+		this.submitting = false;
+	}
+}
+```
+
+Three points to make: the template disables the button, but a disabled button is a **UI courtesy,
+not a guarantee**, so the component re-checks; the permission gate is re-checked for the same reason;
+and `submitting` resets in a `finally` so a *failed* call re-enables the button instead of locking
+the screen.
+
+**Alternatives if you prefer a judgment call over a mechanism:**
+
+- **Description-only edits count as `changed`** — CR-2 is titled "Replace SKU-B supplier" and changes
+  nothing but the description, with `delta: 0`. Calling that "unchanged" would render a CR whose
+  entire purpose is a change as having changed nothing.
+- **`[readonly]` instead of `disable()`** on the reason box — a disabled Angular control reports
+  `invalid === false`, so the Reject button's binding would briefly disagree with itself.
+
+Pick **one** and go deep. Two shallow explanations are worse than one complete one.
+
+### What to leave out
+
+- **Reading code line by line.** Show a snippet only when it is the decision being explained.
+- **Explaining Angular basics** — what `*ngIf` is, what a getter is. Assume a competent audience.
+- **Setup**: `npm install`, `nvm use`, the folder structure.
+- **Walking this audit file.** It is a written artefact; reading it aloud burns the whole budget.
+- **Narrating all 45 tests.** Show the green summary, name the categories, move on.
+- **Apologising** for what is unfinished. State it plainly once if it comes up, or leave it to
+  `IMPLEMENTATION_NOTES.md`.
+- **Every filter permutation.** Two are enough to make the point.
+
+### Delivery notes
+
+- **Rehearse once without recording.** The running order above is tight; the first attempt always
+  overruns.
+- **Zoom the browser and the editor** so text is legible in a compressed video.
+- **Say the decision before the mechanism** — "I decided X because Y, here is how it works" beats
+  narrating code and arriving at a conclusion.
+- **8 minutes is a ceiling, not a target.** A tight 6 minutes that covers all five ingredients is
+  better than a rushed 8.
+- The AI-usage disclosure belongs in `IMPLEMENTATION_NOTES.md` §6, not in the video — but be ready
+  to talk about it in the interview.
